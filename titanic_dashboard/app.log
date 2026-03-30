@@ -1,0 +1,16 @@
+{"page": "dashboard", "classe": "All", "sexe": "All"}
+{"page": "dashboard", "classe": "All", "sexe": "All"}
+{"page": "dashboard", "classe": "All", "sexe": "All"}
+{"page": "dashboard", "classe": "All", "sexe": "All"}
+{"page": "dashboard", "classe": [1, 2, 3], "sexe": ["male", "female"]}
+{"page": "dashboard", "classe": [1, 2, 3], "sexe": ["male", "female"], "age_range": [0, 80]}
+{"action": "filter", "rows": 714}
+{"action": "filter", "rows": 714}
+{"action": "filter", "rows": 714}
+{"page": "dashboard", "classe": [1, 2, 3], "sexe": ["male", "female"], "age_range": [0, 80]}
+{"page": "dashboard", "classe": [1, 2], "sexe": ["male", "female"], "age_range": [0, 80]}
+{"page": "dashboard", "classe": [1], "sexe": ["male", "female"], "age_range": [0, 80]}
+{"page": "dashboard", "classe": [], "sexe": ["male", "female"], "age_range": [0, 80]}
+{"page": "dashboard", "classe": [], "sexe": ["male"], "age_range": [0, 80]}
+{"page": "dashboard", "classe": [1, 2, 3], "sexe": ["male", "female"], "age_range": [0, 80]}
+{"page": "dashboard", "classe": [], "sexe": ["male", "female"], "age_range": [0, 80]}
