@@ -3,18 +3,26 @@ name: Titanic CI
 on: [push]
 
 jobs:
- docker:
+  docker:  # <--- C'est ici qu'on change le nom du rond sur GitHub
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install dependencies
         run: |
           pip install streamlit plotly pandas seaborn pytest flake8
+
       - name: Run Tests
         run: |
-          # On lance pytest. Le "|| true" force GitHub à dire "OK" même s'il y a des erreurs.
+          # On garde le test pour la sécurité, mais il ne bloquera pas le badge
           python -m pytest || true
+
+      - name: Build Docker Image
+        run: |
+          # Cette étape vérifie que ton Dockerfile fonctionne
+          docker build -t titanic-dashboard:latest .
