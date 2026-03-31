@@ -1,8 +1,10 @@
+import pandas as pd
 from data.loader import load_data
 
 
 def test_data_not_empty():
     df = load_data()
+    assert df is not None
     assert not df.empty
 
 
@@ -15,5 +17,3 @@ def test_columns_exist():
 def test_no_null_age():
     df = load_data()
     assert df['age'].isnull().sum() == 0
-
-# (Appuie bien sur ENTRÉE ici pour laisser une ligne vide à la fin)
