@@ -5,118 +5,80 @@ import logging
 import json
 from data.loader import load_data
 
-# --- CONFIG LOGGER (ELK) ---
+# 1. CONFIGURATION & LOGGER
 logging.basicConfig(filename="app.log", level=logging.INFO, format="%(message)s")
 
-def log_event(page_name, filters=None, action="view"):
-    log_data = {
-        "page": page_name,
-        "action": action,
-        "classe": filters.get("classe") if filters else None,
-        "sexe": filters.get("sexe") if filters else None,
-        "age_min": filters.get("age_min") if filters else None,
-        "age_max": filters.get("age_max") if filters else None,
-    }
+def log_event(page_name, action="view"):
+    log_data = {"page": page_name, "action": action}
     logging.info(json.dumps(log_data))
 
-# --- CONFIG PAGE ---
 st.set_page_config(page_title="Titanic Dashboard", layout="wide")
 
-# --- CHARGEMENT DATA ---
+# 2. CHARGEMENT DES DONNÉES
 @st.cache_data
-def get_data():
-    return load_data()
+def get_cleaned_data():
+    df = load_data()
+    df["age"] = df["age"].fillna(df["age"].mean())
+    return df
 
-df = get_data()
+df = get_cleaned_data()
 
-# --- SIDEBAR NAVIGATION ---
-st.sidebar.title("🚢 Titanic App")
-page = st.sidebar.radio("Navigation", [
-    "Dashboard",
-    "Statistiques",
-    "Analyse",
-    "Données"
-])
+# ---------------------------------------------------------
+# 3. BARRE LATÉRALE (LA NAVIGATION EST ICI)
+# ---------------------------------------------------------
+st.sidebar.title("🚢 Menu de Navigation")
 
-# --- FILTRES ---
-st.sidebar.header("🔍 Filtres")
+# Cette ligne FORCE l'affichage du sélecteur de page
+page_selection = st.sidebar.radio(
+    "Choisir une analyse :",
+    ["Accueil", "Survie", "Filtres", "Données"]
+)
 
-classe = st.sidebar.multiselect("Classe", [1, 2, 3], default=[1, 2, 3])
-sexe = st.sidebar.multiselect("Sexe", ["male", "female"], default=["male", "female"])
-age_range = st.sidebar.slider("Âge", 0, 80, (0, 80))
+st.sidebar.divider()
 
-# --- DATA FILTER ---
-df_filtered = df[
-    (df["pclass"].isin(classe)) &
-    (df["sex"].isin(sexe)) &
-    (df["age"].between(age_range[0], age_range[1]))
-]
+# Filtres globaux (toujours visibles dans la sidebar)
+st.sidebar.subheader("⚙️ Filtres")
+sel_classe = st.sidebar.multiselect("Classe", [1, 2, 3], default=[1, 2, 3])
+sel_sexe = st.sidebar.multiselect("Sexe", ["male", "female"], default=["male", "female"])
 
-# --- FILTRES POUR LOG ---
-filters = {
-    "classe": str(classe),
-    "sexe": str(sexe),
-    "age_min": age_range[0],
-    "age_max": age_range[1]
-}
+# Application du filtre
+df_filtered = df[(df["pclass"].isin(sel_classe)) & (df["sex"].isin(sel_sexe))]
 
-# =========================
-# 📊 1. DASHBOARD
-# =========================
-if page == "Dashboard":
-    st.title("📊 Dashboard")
+# ---------------------------------------------------------
+# 4. LOGIQUE D'AFFICHAGE (LE CONTENU CHANGE ICI)
+# ---------------------------------------------------------
 
-    log_event("dashboard", filters)
+if page_selection == "Accueil":
+    st.header("📊 1. Vue Générale")
+    log_event("page_accueil")
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Passagers", len(df_filtered))
+    c2.metric("Taux Survie", f"{round(df_filtered['survived'].mean()*100, 1)}%")
+    c3.metric("Âge Moyen", f"{round(df_filtered['age'].mean(), 1)}")
+    
+    st.plotly_chart(px.histogram(df_filtered, x="age", title="Répartition par âge"), use_container_width=True)
 
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("Total", len(df_filtered))
-    col2.metric("Survie (%)", round(df_filtered["survived"].mean()*100, 1))
-    col3.metric("Âge moyen", round(df_filtered["age"].mean(), 1))
-
-    fig = px.histogram(df_filtered, x="age", color="survived", barmode="group")
-    st.plotly_chart(fig, use_container_width=True)
-
-# =========================
-# 📈 2. STATISTIQUES
-# =========================
-elif page == "Statistiques":
-    st.title("📈 Statistiques")
-
-    log_event("stats", filters)
-
+elif page_selection == "Survie":
+    st.header("📈 2. Analyse de Survie")
+    log_event("page_survie")
+    
     col1, col2 = st.columns(2)
+    with col1:
+        st.plotly_chart(px.pie(df_filtered, names="sex", title="Sexe"), use_container_width=True)
+    with col2:
+        st.plotly_chart(px.bar(df_filtered, x="pclass", y="survived", title="Survie/Classe"), use_container_width=True)
 
-    fig1 = px.pie(df_filtered, names="sex", title="Répartition Sexe")
-    col1.plotly_chart(fig1, use_container_width=True)
+elif page_selection == "Filtres":
+    st.header("🔍 3. Filtres Interactifs")
+    log_event("page_filtres")
+    
+    age_slide = st.slider("Âge précis", 0, 80, (0, 80))
+    df_step3 = df_filtered[df_filtered["age"].between(age_slide[0], age_slide[1])]
+    st.write(f"Résultats pour cette tranche : {len(df_step3)}")
+    st.plotly_chart(px.scatter(df_step3, x="age", y="fare", color="sex"), use_container_width=True)
 
-    fig2 = px.bar(
-        df_filtered.groupby("pclass")["survived"].mean().reset_index(),
-        x="pclass", y="survived",
-        title="Survie par classe"
-    )
-    col2.plotly_chart(fig2, use_container_width=True)
-
-# =========================
-# 🔍 3. ANALYSE
-# =========================
-elif page == "Analyse":
-    st.title("🔍 Analyse des filtres")
-
-    log_event("analysis", filters)
-
-    st.write("Filtres utilisés :")
-    st.json(filters)
-
-    fig = px.scatter(df_filtered, x="age", y="fare", color="survived")
-    st.plotly_chart(fig, use_container_width=True)
-
-# =========================
-# 📋 4. DONNÉES
-# =========================
-elif page == "Données":
-    st.title("📋 Données brutes")
-
-    log_event("data", filters)
-
+elif page_selection == "Données":
+    st.header("📋 4. Données Brutes")
+    log_event("page_donnees")
     st.dataframe(df_filtered, use_container_width=True)
