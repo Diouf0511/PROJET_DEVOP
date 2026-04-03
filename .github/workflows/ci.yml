@@ -1,11 +1,10 @@
-name: Titanic Dashboard CI/CD Pipeline
+name: Titanic CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:  # Permet un déclenchement manuel
 
 env:
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -13,7 +12,6 @@ env:
   NEXUS_URL: ${{ secrets.NEXUS_URL }}
   NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
   NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
-  PYTHON_VERSION: '3.11'
 
 jobs:
   # ============================================
@@ -22,16 +20,15 @@ jobs:
   lint-test:
     name: "✅ Job 1 — Lint & Test"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.11'
       
       - name: Cache pip packages
         uses: actions/cache@v3
@@ -45,58 +42,34 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install flake8 pytest pytest-cov black isort
-      
-      - name: Check code formatting with black
-        run: |
-          black --check app.py data/ tests/ || echo "⚠️ Run 'black .' to fix formatting"
-      
-      - name: Check import sorting with isort
-        run: |
-          isort --check-only app.py data/ tests/ || echo "⚠️ Run 'isort .' to fix imports"
+          pip install flake8 pytest pytest-cov
       
       - name: Lint with flake8
         run: |
-          # Configuration flake8
-          flake8 app.py --count --max-complexity=10 --max-line-length=127 --statistics --show-source
-          flake8 data/loader.py --count --max-complexity=10 --max-line-length=127 --statistics --show-source
-          if [ -d "tests" ]; then
-            flake8 tests/ --count --max-line-length=127 --statistics --show-source
-          fi
+          # Vérification du style Python
+          flake8 app.py --count --max-complexity=10 --max-line-length=127 --statistics
+          flake8 data/loader.py --count --max-complexity=10 --max-line-length=127 --statistics
+          flake8 tests/ --count --max-line-length=127 --statistics
       
-      - name: Run tests with pytest
+      - name: Test with pytest
         run: |
-          # Créer le dossier tests s'il n'existe pas
-          mkdir -p tests
-          
-          # Exécuter les tests avec couverture
-          pytest tests/ -v --tb=short --cov=. --cov-report=xml --cov-report=html --cov-report=term
+          # Exécution des tests avec couverture
+          pytest tests/ -v --tb=short --cov=. --cov-report=xml
       
       - name: Upload coverage to GitHub
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v3
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
-          token: ${{ secrets.CODECOV_TOKEN }}
-      
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-results
-          path: |
-            coverage.xml
-            htmlcov/
-          retention-days: 14
 
   # ============================================
   # JOB 2 : GÉNÉRATION RAPPORT + UPLOAD NEXUS
   # ============================================
   generate-report:
     name: "📊 Job 2 — Génération Rapport → Nexus"
-    needs: lint-test
+    needs: lint-test  # Attend que les tests passent
     runs-on: ubuntu-latest
-    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    if: success()  # Seulement si Job 1 a réussi
     
     steps:
       - name: Checkout code
@@ -105,114 +78,71 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.11'
       
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install pandas seaborn ydata-profiling matplotlib plotly
+          pip install pandas seaborn ydata-profiling
       
-      - name: Generate comprehensive profiling report
+      - name: Generate profiling report
         run: |
-          python << EOF
+          python -c "
           import pandas as pd
           import seaborn as sns
           from ydata_profiling import ProfileReport
-          import matplotlib.pyplot as plt
-          import plotly.express as px
           
-          print('📥 Loading Titanic dataset...')
+          print('📥 Chargement du dataset Titanic...')
           df = sns.load_dataset('titanic')
           
-          # Data cleaning
-          df['age'] = df['age'].fillna(df['age'].median())
-          df['embarked'] = df['embarked'].fillna(df['embarked'].mode()[0])
+          print('📊 Génération du rapport d'analyse...')
+          profile = ProfileReport(df, title='Titanic Dataset Analysis Report', explorative=True)
           
-          print('📊 Generating comprehensive report...')
-          profile = ProfileReport(
-              df, 
-              title=f'Titanic Dataset Analysis Report - Build #{}${{ github.run_number }}',
-              explorative=True,
-              minimal=False,
-              html={
-                  'style': {'full_width': True},
-                  'navbar_show': True
-              }
-          )
+          print('💾 Sauvegarde du rapport...')
+          profile.to_file('titanic-report-v1.0.html')
           
-          print('💾 Saving report...')
-          profile.to_file(f'titanic-report-build-${{ github.run_number }}.html')
-          
-          # Generate additional statistics
-          stats = df.describe()
-          stats.to_csv('titanic-statistics.csv')
-          
-          # Generate correlation matrix
-          corr = df.select_dtypes(include=['number']).corr()
-          corr.to_csv('correlation-matrix.csv')
-          
-          print('✅ Reports generated successfully!')
-          print(f'📊 Total passengers: {len(df)}')
-          print(f'📈 Survival rate: {df["survived"].mean()*100:.1f}%')
-          EOF
+          print('✅ Rapport généré avec succès!')
+          "
       
       - name: Upload to Nexus Repository
+        # Option 1: Avec nexus-upload-artifact
+        uses: astertom/nexus-upload-artifact@v1
+        if: env.NEXUS_URL != ''
+        env:
+          NEXUS_HOST_URL: ${{ secrets.NEXUS_URL }}
+          NEXUS_USER: ${{ secrets.NEXUS_USERNAME }}
+          NEXUS_TOKEN: ${{ secrets.NEXUS_PASSWORD }}
+        with:
+          pattern: "*.html"
+          repositories: "titanic-reports"
+          path: "/reports/${{ github.run_number }}/"
+      
+      - name: Alternative upload with curl (si pas d'action)
         if: env.NEXUS_URL != ''
         run: |
-          # Utiliser Nexus REST API
-          REPORT_FILE="titanic-report-build-${{ github.run_number }}.html"
-          
-          # Créer le répertoire si nécessaire
-          curl -X MKCOL -u "$NEXUS_USERNAME:$NEXUS_PASSWORD" \
-            "$NEXUS_URL/repository/titanic-reports/reports/" 2>/dev/null || true
-          
-          # Upload du rapport principal
-          curl -v -X PUT -u "$NEXUS_USERNAME:$NEXUS_PASSWORD" \
-            --upload-file "$REPORT_FILE" \
-            "$NEXUS_URL/repository/titanic-reports/reports/$REPORT_FILE" \
-            --fail || echo "⚠️ Nexus upload failed"
-          
-          # Upload des statistiques
-          curl -X PUT -u "$NEXUS_USERNAME:$NEXUS_PASSWORD" \
-            --upload-file titanic-statistics.csv \
-            "$NEXUS_URL/repository/titanic-reports/statistics/titanic-statistics-build-${{ github.run_number }}.csv" \
-            --fail || echo "⚠️ Statistics upload failed"
-          
-          echo "✅ Nexus upload completed"
+          curl -v -u "$NEXUS_USERNAME:$NEXUS_PASSWORD" \
+            --upload-file titanic-report-v1.0.html \
+            "$NEXUS_URL/repository/titanic-reports/reports/${{ github.run_number }}/titanic-report-v1.0.html" \
+            || echo "⚠️ Nexus upload skipped (credentials not configured)"
         env:
           NEXUS_URL: ${{ secrets.NEXUS_URL }}
           NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
           NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
       
-      - name: Archive reports
-        uses: actions/upload-artifact@v4
+      - name: Archive report as artifact
+        uses: actions/upload-artifact@v3
         with:
-          name: titanic-reports
-          path: |
-            titanic-report-build-*.html
-            titanic-statistics.csv
-            correlation-matrix.csv
+          name: titanic-report
+          path: titanic-report-v1.0.html
           retention-days: 30
-      
-      - name: Generate report link
-        run: |
-          echo "## 📊 Rapport généré" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Rapport**: titanic-report-build-${{ github.run_number }}.html" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ env.NEXUS_URL }}" != "" ]; then
-            echo "- **Lien Nexus**: ${{ env.NEXUS_URL }}/repository/titanic-reports/reports/titanic-report-build-${{ github.run_number }}.html" >> $GITHUB_STEP_SUMMARY
-          fi
 
   # ============================================
-  # JOB 3 : DOCKER BUILD & PUSH
+  # JOB 3 : DOCKER BUILD & PUSH (VERSION RÉELLE)
   # ============================================
   docker-build-push:
     name: "🐳 Job 3 — Docker Build & Push"
-    needs: [lint-test, generate-report]
+    needs: generate-report
     runs-on: ubuntu-latest
-    if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    if: success() && github.ref == 'refs/heads/main'
     
     steps:
       - name: Checkout code
@@ -234,11 +164,9 @@ jobs:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/titanic-dashboard
           tags: |
             type=raw,value=latest
-            type=raw,value=${{ github.run_number }}
-            type=raw,value=build-${{ github.run_number }}
+            type=raw,value=v1.0
             type=sha,prefix=sha-
             type=ref,event=branch
-            type=semver,pattern={{version}}
       
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -249,287 +177,91 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            BUILD_NUMBER=${{ github.run_number }}
-            COMMIT_SHA=${{ github.sha }}
       
-      - name: Scan image for vulnerabilities with Trivy
+      - name: Scan image for vulnerabilities
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/titanic-dashboard:latest
           format: 'table'
-          exit-code: '0'
+          exit-code: '0'  # Ne pas bloquer le pipeline, juste alerter
           severity: 'CRITICAL,HIGH'
-          output: trivy-results.txt
-      
-      - name: Upload Trivy results
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-scan-results
-          path: trivy-results.txt
-          retention-days: 14
       
       - name: Verify Docker image
         run: |
           docker images | grep titanic-dashboard
-          docker inspect ${{ secrets.DOCKERHUB_USERNAME }}/titanic-dashboard:latest
-          echo "✅ Docker image built and pushed successfully!"
+          echo "✅ Image Docker construite et poussée avec succès!"
 
   # ============================================
-  # JOB 4 : DÉPLOIEMENT
+  # JOB 4 : DÉPLOIEMENT (AVEC DOCKER-COMPOSE RÉEL)
   # ============================================
   deploy:
     name: "🚀 Job 4 — Déploiement"
     needs: docker-build-push
     runs-on: ubuntu-latest
     if: success() && github.ref == 'refs/heads/main'
-    environment: production
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Create necessary directories
-        run: |
-          mkdir -p logs cache data
-          chmod 777 logs cache data
+      - name: Create logs directory
+        run: mkdir -p logs cache
       
-      - name: Create docker-compose.prod.yml
+      - name: Pull latest image
         run: |
-          cat > docker-compose.prod.yml << 'EOF'
-          version: '3.8'
-          
-          services:
-            titanic-dashboard:
-              image: ${{ secrets.DOCKERHUB_USERNAME }}/titanic-dashboard:latest
-              container_name: titanic-dashboard
-              ports:
-                - "8501:8501"
-              environment:
-                - STREAMLIT_SERVER_PORT=8501
-                - STREAMLIT_SERVER_ADDRESS=0.0.0.0
-                - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
-              volumes:
-                - ./logs:/app/logs
-                - ./cache:/app/cache
-              restart: unless-stopped
-              healthcheck:
-                test: ["CMD", "curl", "-f", "http://localhost:8501"]
-                interval: 30s
-                timeout: 10s
-                retries: 3
-                start_period: 40s
-              logging:
-                driver: "json-file"
-                options:
-                  max-size: "10m"
-                  max-file: "3"
-          
-          # Optionnel: Ajouter ELK stack
-          elasticsearch:
-            image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
-            container_name: elasticsearch
-            environment:
-              - discovery.type=single-node
-              - xpack.security.enabled=false
-            ports:
-              - "9200:9200"
-            volumes:
-              - ./elasticsearch-data:/usr/share/elasticsearch/data
-            restart: unless-stopped
-          
-          kibana:
-            image: docker.elastic.co/kibana/kibana:8.11.0
-            container_name: kibana
-            ports:
-              - "5601:5601"
-            environment:
-              - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-            depends_on:
-              - elasticsearch
-            restart: unless-stopped
-          
-          logstash:
-            image: docker.elastic.co/logstash/logstash:8.11.0
-            container_name: logstash
-            volumes:
-              - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf
-              - ./logs:/logs
-            ports:
-              - "5000:5000"
-            depends_on:
-              - elasticsearch
-            restart: unless-stopped
-          EOF
-      
-      - name: Create Logstash configuration
-        run: |
-          cat > logstash.conf << 'EOF'
-          input {
-            file {
-              path => "/logs/app.log"
-              start_position => "beginning"
-              sincedb_path => "/dev/null"
-              codec => json
-            }
-          }
-          
-          filter {
-            if [page] {
-              mutate {
-                add_field => { "[@metadata][index]" => "titanic-logs" }
-              }
-            }
-          }
-          
-          output {
-            elasticsearch {
-              hosts => ["elasticsearch:9200"]
-              index => "titanic-logs-%{+YYYY.MM.dd}"
-            }
-            stdout { codec => rubydebug }
-          }
-          EOF
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/titanic-dashboard:latest || true
       
       - name: Deploy with docker-compose
         run: |
-          # Pull latest images
-          docker-compose -f docker-compose.prod.yml pull
+          # Arrêter les conteneurs existants
+          docker-compose down || true
           
-          # Stop old containers
-          docker-compose -f docker-compose.prod.yml down || true
-          
-          # Remove old images
+          # Nettoyer les anciennes images
           docker system prune -f || true
           
-          # Start new containers
-          docker-compose -f docker-compose.prod.yml up -d
+          # Démarrer avec la nouvelle image
+          docker-compose up -d --force-recreate
           
-          # Wait for services
-          sleep 30
+          # Attendre que l'app soit prête
+          sleep 10
       
       - name: Health check
         run: |
-          # Check Streamlit app
-          for i in {1..30}; do
-            if curl -f http://localhost:8501; then
-              echo "✅ Streamlit app is healthy"
-              break
-            fi
-            if [ $i -eq 30 ]; then
-              echo "❌ Streamlit app failed to start"
-              exit 1
-            fi
-            sleep 2
-          done
-          
-          # Check Elasticsearch
-          curl -f http://localhost:9200 || echo "⚠️ Elasticsearch not responding"
-          
-          # Check Kibana
-          curl -f http://localhost:5601 || echo "⚠️ Kibana not responding"
+          # Vérifier que l'application répond
+          curl -f http://localhost:8501 || exit 1
+          echo "✅ Application déployée avec succès sur http://localhost:8501"
       
       - name: Check container status
         run: |
-          docker-compose -f docker-compose.prod.yml ps
-          docker-compose -f docker-compose.prod.yml logs --tail=50
+          docker ps
+          docker-compose logs --tail=50
       
       - name: Deploy notification
         if: success()
         run: |
-          echo "## 🎉 Déploiement réussi!" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📊 Services disponibles:" >> $GITHUB_STEP_SUMMARY
-          echo "- **Dashboard Streamlit**: http://localhost:8501" >> $GITHUB_STEP_SUMMARY
-          echo "- **Kibana**: http://localhost:5601" >> $GITHUB_STEP_SUMMARY
-          echo "- **Elasticsearch**: http://localhost:9200" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🔗 Liens utiles:" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image Docker**: ${{ secrets.DOCKERHUB_USERNAME }}/titanic-dashboard:latest" >> $GITHUB_STEP_SUMMARY
+          echo "🎉 Déploiement réussi!"
+          echo "📊 Dashboard: http://localhost:8501"
+          echo "📈 Kibana: http://localhost:5601"
+          echo "🗄️ Nexus: ${{ secrets.NEXUS_URL }}"
 
   # ============================================
-  # JOB 5 : NOTIFICATION (Slack/Email/Teams)
+  # JOB OPTIONNEL : NOTIFICATION (Slack/Email)
   # ============================================
   notify:
-    name: "📧 Job 5 — Notification"
+    name: "📧 Notification"
     needs: [lint-test, generate-report, docker-build-push, deploy]
     runs-on: ubuntu-latest
     if: always()
     
     steps:
-      - name: Determine overall status
-        id: status
+      - name: Check status
         run: |
           if [ "${{ needs.lint-test.result }}" == "success" ] && \
              [ "${{ needs.generate-report.result }}" == "success" ] && \
              [ "${{ needs.docker-build-push.result }}" == "success" ] && \
              [ "${{ needs.deploy.result }}" == "success" ]; then
-            echo "status=success" >> $GITHUB_OUTPUT
-            echo "icon=✅" >> $GITHUB_OUTPUT
-            echo "message=Pipeline completed successfully!" >> $GITHUB_OUTPUT
+            echo "✅ Pipeline complet réussi!"
           else
-            echo "status=failure" >> $GITHUB_OUTPUT
-            echo "icon=❌" >> $GITHUB_OUTPUT
-            echo "message=Pipeline failed. Check logs for details." >> $GITHUB_OUTPUT
+            echo "❌ Une partie du pipeline a échoué"
+            exit 1
           fi
-      
-      - name: Send Slack notification
-        if: secrets.SLACK_WEBHOOK_URL != ''
-        uses: slackapi/slack-github-action@v1.24
-        with:
-          payload: |
-            {
-              "text": "${{ steps.status.outputs.icon }} Titanic Dashboard CI/CD Pipeline\nStatus: ${{ steps.status.outputs.status }}\nMessage: ${{ steps.status.outputs.message }}\nBuild: ${{ github.run_number }}\nBranch: ${{ github.ref_name }}\nCommit: ${{ github.sha }}\nRepository: ${{ github.repository }}\nWorkflow: ${{ github.workflow }}"
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-      
-      - name: Send Teams notification
-        if: secrets.TEAMS_WEBHOOK_URL != ''
-        run: |
-          curl -H "Content-Type: application/json" -d '{
-            "title": "Titanic Dashboard CI/CD Pipeline",
-            "text": "${{ steps.status.outputs.icon }} **Status:** ${{ steps.status.outputs.status }}\n\n**Message:** ${{ steps.status.outputs.message }}\n\n**Build:** ${{ github.run_number }}\n**Branch:** ${{ github.ref_name }}\n**Commit:** ${{ github.sha }}",
-            "themeColor": "${{ steps.status.outputs.status == 'success' && '00FF00' || 'FF0000' }}"
-          }' ${{ secrets.TEAMS_WEBHOOK_URL }} || true
-      
-      - name: Send email notification
-        if: secrets.EMAIL_RECIPIENT != ''
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          username: ${{ secrets.EMAIL_USERNAME }}
-          password: ${{ secrets.EMAIL_PASSWORD }}
-          subject: "Titanic Dashboard CI/CD - ${{ steps.status.outputs.status }}"
-          to: ${{ secrets.EMAIL_RECIPIENT }}
-          body: |
-            Pipeline Status: ${{ steps.status.outputs.status }}
-            
-            ${{ steps.status.outputs.message }}
-            
-            Details:
-            - Build: ${{ github.run_number }}
-            - Branch: ${{ github.ref_name }}
-            - Commit: ${{ github.sha }}
-            - Repository: ${{ github.repository }}
-            - Workflow: ${{ github.workflow }}
-            
-            View details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      
-      - name: Create GitHub summary
-        run: |
-          echo "# ${{ steps.status.outputs.icon }} CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📊 Job Status" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Job | Status | Duration |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|--------|----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Lint & Test | ${{ needs.lint-test.result }} | - |" >> $GITHUB_STEP_SUMMARY
-          echo "| Generate Report | ${{ needs.generate-report.result }} | - |" >> $GITHUB_STEP_SUMMARY
-          echo "| Docker Build & Push | ${{ needs.docker-build-push.result }} | - |" >> $GITHUB_STEP_SUMMARY
-          echo "| Deploy | ${{ needs.deploy.result }} | - |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Final Status:** ${{ steps.status.outputs.status }}" >> $GITHUB_STEP_SUMMARY
