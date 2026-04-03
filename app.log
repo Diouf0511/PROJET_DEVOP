@@ -54,3 +54,6 @@
 {"page": "page_filtres", "action": "view"}
 {"page": "page_donnees", "action": "view"}
 {"page": "page_accueil", "action": "view"}
+{"page": "page_accueil", "action": "view"}
+{"page": "page_accueil", "action": "view"}
+{"page": "page_donnees", "action": "view"}

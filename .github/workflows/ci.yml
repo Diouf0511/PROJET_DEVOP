@@ -1,48 +1,267 @@
-name: Titanic CI
+name: Titanic CI/CD Pipeline
 
-on: [push]
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+  NEXUS_URL: ${{ secrets.NEXUS_URL }}
+  NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+  NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
 
 jobs:
-  # JOB 1 : TEST & LINT
+  # ============================================
+  # JOB 1 : LINT & TEST (OBLIGATOIRE)
+  # ============================================
   lint-test:
-    name: "Job 1 — Lint & Test"
+    name: "✅ Job 1 — Lint & Test"
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 pytest pytest-cov
+      
+      - name: Lint with flake8
+        run: |
+          # Vérification du style Python
+          flake8 app.py --count --max-complexity=10 --max-line-length=127 --statistics
+          flake8 data/loader.py --count --max-complexity=10 --max-line-length=127 --statistics
+          flake8 tests/ --count --max-line-length=127 --statistics
+      
+      - name: Test with pytest
+        run: |
+          # Exécution des tests avec couverture
+          pytest tests/ -v --tb=short --cov=. --cov-report=xml
+      
+      - name: Upload coverage to GitHub
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  # ============================================
+  # JOB 2 : GÉNÉRATION RAPPORT + UPLOAD NEXUS
+  # ============================================
+  generate-report:
+    name: "📊 Job 2 — Génération Rapport → Nexus"
+    needs: lint-test  # Attend que les tests passent
+    runs-on: ubuntu-latest
+    if: success()  # Seulement si Job 1 a réussi
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      
       - name: Install dependencies
-        run: pip install streamlit plotly pandas seaborn pytest flake8
-      - name: Run Tests
-        run: python -m pytest || true
+        run: |
+          pip install pandas seaborn ydata-profiling
+      
+      - name: Generate profiling report
+        run: |
+          python -c "
+          import pandas as pd
+          import seaborn as sns
+          from ydata_profiling import ProfileReport
+          
+          print('📥 Chargement du dataset Titanic...')
+          df = sns.load_dataset('titanic')
+          
+          print('📊 Génération du rapport d'analyse...')
+          profile = ProfileReport(df, title='Titanic Dataset Analysis Report', explorative=True)
+          
+          print('💾 Sauvegarde du rapport...')
+          profile.to_file('titanic-report-v1.0.html')
+          
+          print('✅ Rapport généré avec succès!')
+          "
+      
+      - name: Upload to Nexus Repository
+        # Option 1: Avec nexus-upload-artifact
+        uses: astertom/nexus-upload-artifact@v1
+        if: env.NEXUS_URL != ''
+        env:
+          NEXUS_HOST_URL: ${{ secrets.NEXUS_URL }}
+          NEXUS_USER: ${{ secrets.NEXUS_USERNAME }}
+          NEXUS_TOKEN: ${{ secrets.NEXUS_PASSWORD }}
+        with:
+          pattern: "*.html"
+          repositories: "titanic-reports"
+          path: "/reports/${{ github.run_number }}/"
+      
+      - name: Alternative upload with curl (si pas d'action)
+        if: env.NEXUS_URL != ''
+        run: |
+          curl -v -u "$NEXUS_USERNAME:$NEXUS_PASSWORD" \
+            --upload-file titanic-report-v1.0.html \
+            "$NEXUS_URL/repository/titanic-reports/reports/${{ github.run_number }}/titanic-report-v1.0.html" \
+            || echo "⚠️ Nexus upload skipped (credentials not configured)"
+        env:
+          NEXUS_URL: ${{ secrets.NEXUS_URL }}
+          NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+      
+      - name: Archive report as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: titanic-report
+          path: titanic-report-v1.0.html
+          retention-days: 30
 
-  # JOB 2 : RAPPORT (Nexus sim)
-  report:
-    name: "Job 2 — Rapport"
-    needs: lint-test
+  # ============================================
+  # JOB 3 : DOCKER BUILD & PUSH (VERSION RÉELLE)
+  # ============================================
+  docker-build-push:
+    name: "🐳 Job 3 — Docker Build & Push"
+    needs: generate-report
     runs-on: ubuntu-latest
+    if: success() && github.ref == 'refs/heads/main'
+    
     steps:
-      - uses: actions/checkout@v4
-      - name: Generate Report
-        run: echo "Génération du rapport titanic-report-v1.0.html"
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/titanic-dashboard
+          tags: |
+            type=raw,value=latest
+            type=raw,value=v1.0
+            type=sha,prefix=sha-
+            type=ref,event=branch
+      
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/titanic-dashboard:latest
+          format: 'table'
+          exit-code: '0'  # Ne pas bloquer le pipeline, juste alerter
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Verify Docker image
+        run: |
+          docker images | grep titanic-dashboard
+          echo "✅ Image Docker construite et poussée avec succès!"
 
-  # JOB 3 : DOCKER BUILD
-  docker:
-    name: "Job 3 — Docker Build & Push"
-    needs: report
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build Image
-        run: docker build -t titanic-dashboard:v1.0 .
-
-  # JOB 4 : DEPLOY
+  # ============================================
+  # JOB 4 : DÉPLOIEMENT (AVEC DOCKER-COMPOSE RÉEL)
+  # ============================================
   deploy:
-    name: "Job 4 — Deploy"
-    needs: docker
+    name: "🚀 Job 4 — Déploiement"
+    needs: docker-build-push
     runs-on: ubuntu-latest
+    if: success() && github.ref == 'refs/heads/main'
+    
     steps:
-      - name: Deploy
-        run: echo "Déploiement Docker-compose up -d réussi"
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Create logs directory
+        run: mkdir -p logs cache
+      
+      - name: Pull latest image
+        run: |
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/titanic-dashboard:latest || true
+      
+      - name: Deploy with docker-compose
+        run: |
+          # Arrêter les conteneurs existants
+          docker-compose down || true
+          
+          # Nettoyer les anciennes images
+          docker system prune -f || true
+          
+          # Démarrer avec la nouvelle image
+          docker-compose up -d --force-recreate
+          
+          # Attendre que l'app soit prête
+          sleep 10
+      
+      - name: Health check
+        run: |
+          # Vérifier que l'application répond
+          curl -f http://localhost:8501 || exit 1
+          echo "✅ Application déployée avec succès sur http://localhost:8501"
+      
+      - name: Check container status
+        run: |
+          docker ps
+          docker-compose logs --tail=50
+      
+      - name: Deploy notification
+        if: success()
+        run: |
+          echo "🎉 Déploiement réussi!"
+          echo "📊 Dashboard: http://localhost:8501"
+          echo "📈 Kibana: http://localhost:5601"
+          echo "🗄️ Nexus: ${{ secrets.NEXUS_URL }}"
+
+  # ============================================
+  # JOB OPTIONNEL : NOTIFICATION (Slack/Email)
+  # ============================================
+  notify:
+    name: "📧 Notification"
+    needs: [lint-test, generate-report, docker-build-push, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Check status
+        run: |
+          if [ "${{ needs.lint-test.result }}" == "success" ] && \
+             [ "${{ needs.generate-report.result }}" == "success" ] && \
+             [ "${{ needs.docker-build-push.result }}" == "success" ] && \
+             [ "${{ needs.deploy.result }}" == "success" ]; then
+            echo "✅ Pipeline complet réussi!"
+          else
+            echo "❌ Une partie du pipeline a échoué"
+            exit 1
+          fi
